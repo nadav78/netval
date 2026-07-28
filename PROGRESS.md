@@ -73,7 +73,7 @@ rx reports 1000 received; ASan clean.
 | `src/wire.h` — wire format spec          | 📋    | ✅ Done |
 | `wire_checksum` (FNV-1a)                 | 🧑    | ✅ Done |
 | `wire_hdr_pack` / `wire_hdr_unpack`      | 🧑    | ✅ Done |
-| `src/tx.c` — blocking UDP sender         | 🧑    | 🔨 Next up |
+| `src/tx.c` — blocking UDP sender         | 🧑    | ✅ Done |
 | `src/rx.c` — blocking UDP receiver       | 🧑    | ⬜ Not started |
 | End-to-end localhost run, ASan clean     | 🧑    | ⬜ Not started |
 
@@ -130,7 +130,28 @@ Nadav's-future-interview terms.
   alignment are why pointer-casting a byte buffer is UB and memcpy or
   shifts are the sanctioned forms; ntohl/htonl exist but have no
   standard 64-bit sibling.
-- **`tx_run`** — _(pending)_
+- **`tx_run`** — done: socket() → sockaddr_in (zeroed, htons port,
+  inet_pton) → per-packet assemble (header fields, seq+i payload
+  pattern, checksum, pack) → sendto → nanosleep pacing. Verified live:
+  Python listener received exact expected bytes ("NETV" magic, BE seq
+  0/1/2, ticking timestamps, correct FNV-1a independently recomputed
+  in Python); 1000-packet max-payload flood ASan/UBSan clean.
+  Learned: (1) errno is only meaningful after a call REPORTS failure —
+  checking sendto's return against the wrong constant produced
+  "error: Success"; idiom is `== -1`; (2) buffer capacity
+  (NETVAL_MAX_DGRAM) vs actual packet size (HDR+payload_len) — send
+  the letter, not the envelope box; (3) loop-variable width: uint8_t i
+  vs payload_len up to 1200 = infinite wrap loop (defined unsigned
+  wrap, logic bug not UB); (4) format specifiers match per-argument
+  (%s↔char*, %u↔uint32_t) — printf trusts the format blindly;
+  (5) "implicit declaration of X" ⇒ missing header, and one missing
+  header cascades into dozens of errors — always fix the FIRST error;
+  (6) &header for struct-to-pointer args (structs don't decay; arrays
+  do); (7) widen operands not results: (uint64_t)tv_sec * 1e9ULL;
+  (8) `= {0}` any struct handed to the kernel; C never zeroes locals;
+  (9) IDE autocomplete can insert C++/internal headers (<cerrno>,
+  <bits/time.h>) — compiler is ground truth, but this time the
+  squiggle was real.
 - **`rx_run`** — _(pending)_
 
 ### Concepts covered so far (explained, pre-implementation)

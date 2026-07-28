@@ -39,14 +39,86 @@
  * Headers you'll need: <sys/socket.h>, <netinet/in.h>, <arpa/inet.h>,
  * <unistd.h>, <string.h>, <errno.h>, <time.h>.
  */
+#include <sys/socket.h>   /* socket, sendto            */
+#include <netinet/in.h>   /* sockaddr_in, htons        */
+#include <arpa/inet.h>    /* inet_pton                 */
+#include <unistd.h>       /* close                     */
+#include <string.h>       /* strerror                  */
+#include <errno.h>        /* errno                     */
+#include <time.h>         /* clock_gettime, nanosleep  */
+#include <stdio.h>        /* perror                    */
 #include "netval.h"
-#include "log.h"
 #include "wire.h"
+#include "log.h"
+
 
 int tx_run(const netval_cfg *cfg)
 {
-    /* TODO(you): implement per the plan above. */
-    (void)cfg;
-    log_error("tx_run: not implemented yet");
-    return -1;
+    int sfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sfd == -1) {
+        perror("socket");
+        return -1;
+    }
+
+    // build destination address
+    struct sockaddr_in dest = {0};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(cfg->port);
+
+    int s = inet_pton(AF_INET, cfg->dest_ip, &dest.sin_addr);
+    if (s == -1) {
+        perror("inet_pton");
+        close(sfd);
+        return -1;
+    }
+    if (s == 0) {
+        log_error("invalid destination address: %s", cfg->dest_ip);
+        close(sfd);
+        return -1;
+    }
+
+    // send loop
+    for (uint32_t seq = 0; seq < cfg->count; seq++) {
+        netval_hdr header = {0};
+        header.magic = NETVAL_MAGIC;
+        header.seq = seq;
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        header.ts_ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+        header.payload_len = cfg->payload_len;
+
+        // the bytes all go in a buffer: [24-byte-header][payload]
+        uint8_t buf[NETVAL_MAX_DGRAM];
+        for (uint16_t i = 0; i < cfg->payload_len; i++) {
+            buf[NETVAL_HDR_SIZE + i] = (uint8_t)(seq + i);
+        }
+
+        header.checksum = wire_checksum(buf + NETVAL_HDR_SIZE, cfg->payload_len);
+
+        if (wire_hdr_pack(&header, buf, NETVAL_MAX_DGRAM) == -1) {
+            log_error("failed to wire header");
+            close(sfd);
+            return -1;
+        }
+
+        if (sendto(sfd, buf, NETVAL_HDR_SIZE + cfg->payload_len, 0, 
+            (struct sockaddr *)&dest, sizeof(dest)) == -1) {
+                log_error("error sending to server: %s", strerror(errno));
+                close(sfd);
+                return -1;
+            }
+        
+        if (cfg->rate_pps > 0) {
+            struct timespec gap;
+            gap.tv_nsec = 1000000000ULL / cfg->rate_pps;
+            gap.tv_sec = 0;
+            if (nanosleep(&gap, NULL) == -1) {
+                log_error("sleep failed: %s", strerror(errno));
+            }
+        }
+    }
+    close(sfd);
+    log_info("Sent %u packets", cfg->count);
+    return 0;
+
 }
