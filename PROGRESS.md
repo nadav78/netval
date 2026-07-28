@@ -16,6 +16,13 @@ the way. Claude updates this as work lands.
 | 2 | Event-Driven Receiver (epoll)              | ⬜ Not started |
 | 3 | Multithreaded Generator & Verification     | ⬜ Not started |
 | 4 | Python Test Harness                        | ⬜ Not started |
+| 5 | Syscall Batching & Socket Tuning           | ⬜ Not started |
+| 6 | Multi-Core Scaling & Benchmark Report      | ⬜ Not started |
+
+Milestones 1–4 build the *correct, verified tool*; milestones 5–6 are
+the performance-engineering arc (scope chosen 2026-07-28: perf depth
+over protocol breadth / extra stats / CI polish). M6 completes the
+project.
 
 ---
 
@@ -178,3 +185,28 @@ loss/reorder/duplication (tc netem) detected; a lying receiver caught
 by the PCAP cross-check.
 **Planned ownership:** 🤖 nearly all of it (argparse, subprocess
 orchestration, scapy parsing — permitted boilerplate).
+
+## Milestone 5 — Syscall Batching & Socket Tuning — not started
+
+**Goal:** reduce per-packet cost on a single core. Baseline the M1–M4
+tool first (pps/CPU, measured via the M4 harness — no optimizing
+without a baseline), then batch syscalls with `sendmmsg`/`recvmmsg`
+(N packets per kernel crossing) and tune `SO_SNDBUF`/`SO_RCVBUF`,
+learning to locate drops (`/proc/net/udp`, `ss -u`).
+**Exit criteria:** measured single-core pps improvement over the
+recorded baseline; every drop accounted for; numbers logged here.
+**Planned ownership:** 🧑 batching loops and buffer management ·
+🤖 API explanations, measurement scripts.
+
+## Milestone 6 — Multi-Core Scaling & Benchmark Report — not started
+
+**Goal (capstone):** scale receive across cores with `SO_REUSEPORT`
+sharding (one socket+thread per core), CPU pinning
+(`pthread_setaffinity_np`), and false-sharing-aware stats layout;
+then write `BENCHMARKS.md` — methodology, hardware,
+baseline→M5→M6 progression, and what each change bought and why.
+**Exit criteria:** near-linear rx scaling to available cores on
+localhost; benchmark writeup published in the repo. Project complete
+(optional v1.0 tag).
+**Planned ownership:** 🧑 sharded sockets, affinity, counter layout ·
+🤖 measurement scripts, BENCHMARKS.md formatting from measured data.

@@ -73,6 +73,11 @@ Run `netval --help` for all options.
    senders, precise loss/reorder/duplicate accounting, TSan-clean
 4. **Python test harness** — subprocess orchestration, scapy PCAP
    cross-validation, fault injection via `tc netem`
+5. **Syscall batching & socket tuning** — measured baseline, then
+   `sendmmsg`/`recvmmsg` and buffer tuning for single-core throughput
+6. **Multi-core scaling & benchmark report** — `SO_REUSEPORT`
+   sharding, CPU pinning, and a published `BENCHMARKS.md` with the
+   full baseline→optimized progression
 
 ## Project notes
 
