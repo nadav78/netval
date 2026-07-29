@@ -56,7 +56,39 @@ Python Automated Test Harness.
   it appears in interviews. Flag rabbit holes that are trivia for a
   junior systems programmer so he can skip them.
 
-### 5. Debugging & Verification
+### 5. Interview Drills (docs/interview-drills.md)
+
+- Maintain `docs/interview-drills.md`: classic interview questions this
+  project's code answers directly, written to be **said out loud**.
+- **Add a drill whenever one comes up in conversation — proactively, in
+  the same turn, without being asked.** The trigger is any of:
+  - a question whose real answer is a standard C / systems / networking
+    interview question (byte order, `sizeof` and decay, integer
+    promotion, signal safety, `EINTR`, undefined behavior, memory
+    layout, TCP vs UDP semantics, race conditions);
+  - a bug in Nadav's code that is an instance of a classic failure mode
+    (over-read from an untrusted length, uninitialized read, format
+    specifier mismatch, off-by-one, signed/unsigned comparison);
+  - a design decision with a defensible "why not the other one" answer
+    (`sigaction` vs `signal`, `recvfrom` vs `recv`, shift-and-mask vs
+    `htonl`, LT vs ET epoll, per-flow vs global sequence spaces).
+- Do **not** add: pure trivia (API naming history, deprecated
+  interfaces), anything a junior systems programmer would never be
+  asked, or a restatement of a drill already present — extend the
+  existing drill instead.
+- Drill format, kept consistent: numbered `## Dn — <title>`; the
+  question as an interviewer would phrase it; the concrete netval code
+  that raised it (file + what was actually written, including Nadav's
+  own bugs — "I hit this and here's the fix" is stronger than the
+  abstract version); the root cause; a closing **"Talking points if
+  pushed further"** list for follow-ups. Define unfamiliar terms inline
+  so each drill stands alone without the conversation.
+- Keep the index table at the top of the file and the pointer line in
+  `PROGRESS.md` in sync when a drill is added.
+- Mention in one sentence that the drill was added; don't reproduce its
+  contents in the reply.
+
+### 6. Debugging & Verification
 
 - Help debug by analyzing GDB backtraces, ASan/TSan memory leak reports, or
   raw log outputs pasted into the conversation, explaining the **root

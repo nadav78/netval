@@ -47,6 +47,7 @@
 #include <errno.h>        /* errno                     */
 #include <time.h>         /* clock_gettime, nanosleep  */
 #include <stdio.h>        /* perror                    */
+#include <assert.h>
 #include "netval.h"
 #include "wire.h"
 #include "log.h"
@@ -54,9 +55,11 @@
 
 int tx_run(const netval_cfg *cfg)
 {
+    assert(cfg != NULL);
+
     int sfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sfd == -1) {
-        perror("socket");
+        log_error("socket: %s", strerror(errno));
         return -1;
     }
 

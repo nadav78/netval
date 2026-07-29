@@ -15,7 +15,6 @@
 
 uint32_t wire_checksum(const uint8_t *data, size_t len)
 {
-    /* TODO(you): FNV-1a — see algorithm in wire.h. */
     uint32_t hash = 2166136261;
     for (size_t i = 0; i < len; i++) {
         hash ^= data[i];

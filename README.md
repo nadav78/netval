@@ -65,19 +65,28 @@ Run `netval --help` for all options.
 
 ## Roadmap
 
-1. **Skeleton & wire format** — CLI, logging, header codec ✅ / blocking
-   UDP tx+rx 🔨
-2. **Event-driven receiver** — non-blocking sockets, `epoll` loop, live
-   packets/sec and gap reporting
-3. **Multithreaded generator & verification** — `pthread` worker
-   senders, precise loss/reorder/duplicate accounting, TSan-clean
-4. **Python test harness** — subprocess orchestration, scapy PCAP
-   cross-validation, fault injection via `tc netem`
-5. **Syscall batching & socket tuning** — measured baseline, then
-   `sendmmsg`/`recvmmsg` and buffer tuning for single-core throughput
-6. **Multi-core scaling & benchmark report** — `SO_REUSEPORT`
-   sharding, CPU pinning, and a published `BENCHMARKS.md` with the
-   full baseline→optimized progression
+**Core** — the complete project; portfolio-complete after milestone 4:
+
+1. **Skeleton & wire format** — CLI, logging, header codec, blocking
+   UDP tx+rx ✅
+2. **Non-blocking `epoll` receiver** — readiness-driven event loop,
+   drain-until-`EAGAIN`, live stats, clean shutdown
+3. **Threading & precise sequence accounting** — spec-first
+   loss/reorder/duplicate semantics with a bounded reordering window,
+   per-flow `pthread` sender workers, TSan-clean
+4. **Independent validation & fault injection** — a logically
+   independent Python/scapy implementation cross-checks the C engine
+   against raw packet captures, with deterministic and `tc netem`
+   fault injection
+
+**Optional extensions** — pursued after the core is done, never as
+blockers:
+
+5. **One measured optimization story** — baseline → evidence → one
+   justified change (e.g. `recvmmsg` batching) → honest re-measurement
+   in `BENCHMARKS.md`
+6. **Multicore scaling** *(specialized)* — `SO_REUSEPORT` sharding and
+   CPU pinning, only if measurement shows single-core rx saturated
 
 ## Project notes
 

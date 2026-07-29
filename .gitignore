@@ -25,3 +25,6 @@ __pycache__/
 
 # Claude Code machine-local settings
 .claude/settings.local.json
+
+# Personal interview prep — not part of the published project
+docs/interview-drills.md
