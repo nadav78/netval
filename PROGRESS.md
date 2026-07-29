@@ -55,13 +55,6 @@ interviews (see CLAUDE.md).
    masks, debugger output. Interviews: rarely asked directly, but
    assumed everywhere. *Practiced: ongoing*
 
-**Interview drills** — questions this code answers directly, written to
-be said out loud — live in [docs/interview-drills.md](docs/interview-drills.md).
-Currently: D1 (bounds-checking a wire length field), D2 (`sigaction` vs
-`signal`, `EINTR`), D3 (`sizeof` and array decay), D4 (byte order),
-D5 (UDP message boundaries and truncation), D6 (return codes vs
-`exit()`). New drills land there as milestones raise them.
-
 ---
 
 ## Milestone 1 — Skeleton & Wire Format
@@ -191,8 +184,6 @@ Nadav's-future-interview terms.
   `main`, and Ctrl-C is *success* (0) because it is the documented
   normal stop; (8) `uint64_t` needs `PRIu64`, not `%lu` — the type is
   `unsigned long` on 64-bit and `unsigned long long` on 32-bit.
-  Interview drills raised by this piece: D1–D6 in
-  [docs/interview-drills.md](docs/interview-drills.md).
 
 ### Concepts covered so far (explained, pre-implementation)
 

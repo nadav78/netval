@@ -83,8 +83,10 @@ Python Automated Test Harness.
   abstract version); the root cause; a closing **"Talking points if
   pushed further"** list for follow-ups. Define unfamiliar terms inline
   so each drill stands alone without the conversation.
-- Keep the index table at the top of the file and the pointer line in
-  `PROGRESS.md` in sync when a drill is added.
+- Keep the index table at the top of the file in sync when a drill is
+  added. The file is gitignored (personal prep, not published), so do
+  **not** link to it from `PROGRESS.md`, `README.md`, or any other
+  committed document — those links would be dead for anyone cloning.
 - Mention in one sentence that the drill was added; don't reproduce its
   contents in the reply.
 
