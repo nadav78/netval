@@ -17,6 +17,8 @@ typedef struct {
     uint32_t    count;                    /* tx: packets to send */
     uint32_t    rate_pps;                 /* tx: packets/sec, 0 = unlimited */
     uint16_t    payload_len;              /* tx: payload bytes per packet */
+    uint32_t    idle_timeout_s;           /* rx: stop after N idle seconds,
+                                             0 = wait forever (Ctrl-C only) */
 } netval_cfg;
 
 /* Parse argv into *cfg (defaults applied first). Returns 0 on success,

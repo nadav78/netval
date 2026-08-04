@@ -28,6 +28,27 @@ delay applications or complicate the earlier milestones.
 
 ---
 
+## CURRENT FOCUS — Interview Track (started 2026-08-04)
+
+Re-sequenced subset of M2–M4 targeting an interview in 1–2 weeks:
+lite versions that make each resume bullet concretely demonstrable,
+with the heavyweight milestone artifacts explicitly deferred (not
+dropped). Milestone definitions below are unchanged; work done here
+counts toward them.
+
+| Phase | Scope | Backs | Status |
+|-------|-------|-------|--------|
+| A | epoll receiver: `O_NONBLOCK`, drain-until-`EAGAIN`, `--idle-timeout`, LT/ET decision, strace evidence | epoll bullet | ✅ Done |
+| B | tx `--threads N` workers; rx malloc'd per-flow table (src ip:port), dup/backward-seq counter, TSan-clean | pthreads + memory-mgmt bullets | ⬜ |
+| C | netem (probe; proxy fallback) fault injection; GDB-first debugging stories; disassembly walkthroughs | fault-injection + GDB bullet | ⬜ |
+
+Each phase ends with a GDB walkthrough of the new code (structured,
+with short assembly TLDRs). Deferred until after the interview:
+accounting spec + `account.{h,c}`, wire-format freeze review, Python/
+scapy harness, CI, write-ups, M5/M6.
+
+---
+
 ## Core Skills Tracker
 
 Foundational low-level skills this project drills. Workflow: when one
@@ -184,6 +205,33 @@ Nadav's-future-interview terms.
   `main`, and Ctrl-C is *success* (0) because it is the documented
   normal stop; (8) `uint64_t` needs `PRIu64`, not `%lu` — the type is
   `unsigned long` on 64-bit and `unsigned long long` on 32-bit.
+- **`rx_run` epoll conversion (interview track A)** — done: fcntl
+  O_NONBLOCK (read-modify-write to preserve flags) → epoll_create1 →
+  epoll_ctl(ADD, EPOLLIN) → nested loops: outer = one lap per wakeup
+  (epoll_wait, the ONLY sleep), inner = one lap per datagram (drain to
+  EAGAIN); --idle-timeout via epoll_wait's ms timeout arg. Verified:
+  5000/5000 at unlimited rate; idle-timeout, Ctrl-C, and error exits
+  all reach the summary with the right reason; ASan/UBSan clean at max
+  payload; strace: 236 sleep/wake cycles (M1) → 2 epoll_waits total,
+  one wakeup draining 221 datagrams to EAGAIN, idle wait blocked at 0%
+  CPU. Learned: (1) the **syscall error protocol is two channels** —
+  return value says THAT it failed (== -1), errno says WHY; wrote
+  `nready == -1 + EINTR` (arithmetic! == 3) which silently swallowed
+  Ctrl-C: unkillable receiver, stop flag set but unreachable; (2) an
+  `else` binds to the if above it, not to "errors" — the real-error
+  branch belongs nested inside the -1 case, or the success path lands
+  in it; (3) on a non-blocking fd, -1/EAGAIN is the *expected* end of
+  every drain — the empty-check IS the failed read, there is no "is it
+  empty?" syscall; (4) blocking = kernel picks when you wake;
+  nonblocking+epoll = you pick where you sleep — the one-sleep-point
+  model is what makes the timeout and (later) multiple fds possible;
+  (5) epoll doesn't batch — your processing time does: it wakes on the
+  first datagram, the pile forms while you drain, so amortization
+  self-scales with load; (6) break exits the innermost loop only —
+  fatal paths from the inner loop need goto done (and the goto-cleanup
+  idiom is the C answer to "no destructors"); (7) epoll cut wakeups,
+  not syscalls-per-datagram — recvmmsg (M5) is the syscall-count
+  story; keeping the claims separate is what makes both defensible.
 
 ### Concepts covered so far (explained, pre-implementation)
 
@@ -222,15 +270,15 @@ validation path are reused unchanged.
 
 | Piece                                          | Owner | Status |
 |------------------------------------------------|-------|--------|
-| `O_NONBLOCK` via `fcntl` (preserve flags), `SO_RCVBUF` | 🧑 | ⬜ |
-| epoll loop + drain-until-EAGAIN                | 🧑    | ⬜ |
+| `O_NONBLOCK` via `fcntl` (preserve flags)      | 🧑    | ✅ Done (interview track A; `SO_RCVBUF` still ⬜) |
+| epoll loop + drain-until-EAGAIN                | 🧑    | ✅ Done (interview track A) |
 | timerfd live stats (same epoll set)            | 🧑    | ⬜ |
-| SIGINT/SIGTERM clean shutdown (flag + EINTR)   | 🧑    | ⬜ |
-| `--idle-timeout` stop (M1's deferred "proper stop") | 🧑 | ⬜ |
-| LT-vs-ET decision brief (Nadav decides + ~½ page justification) | 📋 | ⬜ |
-| Stats printer formatting                       | 🤖    | ⬜ |
+| SIGINT/SIGTERM clean shutdown (flag + EINTR)   | 🧑    | ✅ SIGINT (M1 + epoll_wait EINTR); SIGTERM ⬜ |
+| `--idle-timeout` stop (M1's deferred "proper stop") | 🧑 | ✅ Done (interview track A; CLI flag 🤖) |
+| LT-vs-ET decision brief (Nadav decides + ~½ page justification) | 📋 | ✅ Decided: LT — drain-to-EAGAIN makes the modes equivalent when correct; a drain regression under LT costs wakeups (loud), under ET strands data silently — wrong failure shape for a counting tool; ET's payoff needs many fds or a shared epoll instance, absent here |
+| Stats printer formatting                       | 🤖    | ✅ Done (summary + stop-reason line) |
 | Formalize M1 ad-hoc wire tests → `tests/` + `make test` | 🤖 | ⬜ |
-| Burst-test script                              | 🤖    | ⬜ |
+| Burst-test script                              | 🤖    | ⬜ (strace_rx.sh covers the syscall-evidence part) |
 
 **Done when — all of:**
 

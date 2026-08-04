@@ -19,6 +19,8 @@ static void usage(const char *prog)
         "  -c, --count N        tx: number of packets to send       [1000]\n"
         "  -r, --rate PPS       tx: packets per second, 0=unlimited [0]\n"
         "  -l, --payload BYTES  tx: payload size per packet, max %d [32]\n"
+        "  -t, --idle-timeout S rx: stop after S seconds with no packets,\n"
+        "                       0 = wait forever                    [0]\n"
         "  -h, --help           show this help\n",
         prog, NETVAL_MAX_PAYLOAD);
 }
@@ -44,8 +46,9 @@ int cli_parse(int argc, char **argv, netval_cfg *cfg)
         { "port",    required_argument, NULL, 'p' },
         { "count",   required_argument, NULL, 'c' },
         { "rate",    required_argument, NULL, 'r' },
-        { "payload", required_argument, NULL, 'l' },
-        { "help",    no_argument,       NULL, 'h' },
+        { "payload",      required_argument, NULL, 'l' },
+        { "idle-timeout", required_argument, NULL, 't' },
+        { "help",         no_argument,       NULL, 'h' },
         { 0, 0, 0, 0 },
     };
 
@@ -56,12 +59,13 @@ int cli_parse(int argc, char **argv, netval_cfg *cfg)
     cfg->count = 1000;
     cfg->rate_pps = 0;
     cfg->payload_len = 32;
+    cfg->idle_timeout_s = 0;
 
     int have_mode = 0;
     int opt;
     unsigned long v;
 
-    while ((opt = getopt_long(argc, argv, "m:d:p:c:r:l:h", longopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "m:d:p:c:r:l:t:h", longopts, NULL)) != -1) {
         switch (opt) {
         case 'm':
             if (strcmp(optarg, "tx") == 0) {
@@ -109,6 +113,15 @@ int cli_parse(int argc, char **argv, netval_cfg *cfg)
                 return -1;
             }
             cfg->payload_len = (uint16_t)v;
+            break;
+        case 't':
+            /* Cap at 3600 s so seconds→milliseconds for epoll_wait's
+             * int timeout can never overflow. */
+            if (parse_ulong(optarg, 3600, &v) != 0) {
+                fprintf(stderr, "error: --idle-timeout must be 0-3600 seconds\n");
+                return -1;
+            }
+            cfg->idle_timeout_s = (uint32_t)v;
             break;
         case 'h':
             usage(argv[0]);
