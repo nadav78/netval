@@ -39,7 +39,7 @@ counts toward them.
 | Phase | Scope | Backs | Status |
 |-------|-------|-------|--------|
 | A | epoll receiver: `O_NONBLOCK`, drain-until-`EAGAIN`, `--idle-timeout`, LT/ET decision, strace evidence | epoll bullet | ✅ Done |
-| B | tx `--threads N` workers; rx malloc'd per-flow table (src ip:port), dup/backward-seq counter, TSan-clean | pthreads + memory-mgmt bullets | 🔨 tx half ✅; rx table next |
+| B | tx `--threads N` workers; rx malloc'd per-flow table (src ip:port), dup/backward-seq counter, TSan-clean | pthreads + memory-mgmt bullets | 🔨 tx + rx table ✅; TSan run pending |
 | C | netem (probe; proxy fallback) fault injection; GDB-first debugging stories; disassembly walkthroughs | fault-injection + GDB bullet | ⬜ |
 
 Each phase ends with a GDB walkthrough of the new code (structured,
@@ -269,6 +269,40 @@ Nadav's-future-interview terms.
   flag, which is why handler-sets-flag scales to threads; (7) uniform
   partial counts (±1) across workers = the atomic's visibility
   working, observable in the logs.
+- **rx per-flow table (interview track B, rx half)** — done: flow_t
+  records keyed on (src ip, src port) captured from recvfrom, calloc'd
+  on first sight into a fixed 64-slot pointer array, linear-scan
+  lookup, freed at teardown. Per-flow expected_next/received/gaps/
+  backward; global reject classes unchanged. Verified: 4 flows x 500 =
+  4 clean streams, next 500 each, zero gaps, zero WARNs (vs the
+  pre-table storm where one global counter read 4 interleaved flows as
+  ~75% loss); ASan clean incl. leak check at 8 flows x 2000 x 1200B,
+  where genuine socket-buffer loss shows up honestly as per-flow gaps.
+  Learned: (1) **use-after-free is silent** — freed the flow records
+  before the summary read them; no crash, just wrong values. The
+  corruption pattern was the diagnosis: first 16 bytes of each record
+  garbage (glibc writes tcache next+key there), later fields perfect,
+  and expected_next *identical across two independent flows* because a
+  per-thread allocator key is shared. ASan named read/free/alloc lines
+  in one run; my first theory (format string) was wrong and a
+  one-field-per-call probe refuted it cheaply. (2) **goto-cleanup means
+  everything between the loop and the label is dead code** — moved the
+  summary above `done:` and it silently never ran (second time this
+  file has produced unreachable post-loop code; in M1 it also hid an
+  uninitialized-counter warning because GCC deleted the block).
+  Correct order: label -> close fds -> READ state -> free state ->
+  return. (3) calloc over malloc when most fields start at zero — and
+  calloc checks count*size for overflow, which malloc(n*sz) does not.
+  (4) reject before you allocate: the table-full check must precede
+  calloc or a full table leaks a record per packet. (5) validate
+  before you account — the flow lookup goes after the checksum so
+  garbage packets can't create table entries (a spoofed-port flood
+  would otherwise fill all 64 slots). (6) keys stay in network byte
+  order because they're only ever compared; the summary's inet_ntop +
+  ntohs is the single conversion point. (7) `f->backward;` compiled
+  fine as a statement with no effect (-Wunused-value caught it), while
+  never assigning expected_next at all was invisible to the compiler —
+  type-shaped bugs get diagnosed, logic-shaped bugs need tests.
 
 ### Concepts covered so far (explained, pre-implementation)
 
@@ -463,7 +497,7 @@ progress line) — and the synchronization rules written down as a
 | Wire-format freeze review (checksum coverage, stream_id) | 📋+🧑 | ⬜ |
 | `docs/sequence-accounting.md` spec               | 📋    | ⬜ |
 | `src/account.{h,c}` classifier                   | 🧑    | ⬜ |
-| Per-flow table in rx                              | 🧑    | ⬜ |
+| Per-flow table in rx                              | 🧑    | ✅ Done (interview track B) |
 | tx `--threads N` workers (sockets, lifecycle, stop, errors) | 🧑 | ✅ Done (interview track B) |
 | Per-worker rate limiting                          | 🧑    | ⬜ |
 | Deterministic account-module test harness         | 🤖    | ⬜ |

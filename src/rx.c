@@ -74,17 +74,61 @@
 #include <signal.h>
 #include <assert.h>
 #include <inttypes.h>     /* PRIu64                    */
+#include <stdio.h>        /* snprintf                  */
+#include <stdlib.h>
+#include <arpa/inet.h>
 #include "netval.h"
 #include "wire.h"
 #include "log.h"
 #include <sys/epoll.h>
 #include <fcntl.h>
 
+#define MAX_FLOWS 64
+
+typedef struct {
+    uint32_t addr;         /* src.sin_addr.s_addr, kept as-is */
+    uint16_t port;         /* src.sin_port, kept as-is */
+    uint32_t expected_next;
+    uint64_t received;     /* valid datagrams from this flow */
+    uint64_t gaps;         /* forward jumps (suspected loss) */
+    uint64_t backward;     /* seq < expected: dup OR reorder —
+                            we can't tell which yet;
+                            count honestly under one name */
+} flow_t;
+
+static flow_t *flows[MAX_FLOWS];  
+static int nflows = 0;
+
 static volatile sig_atomic_t stop;
 
 static void signal_handler(int signo) {
     (void)signo; /* to avoid flagging the unused parameter */
     stop = 1;
+}
+
+/* Find the flow for (addr, port), creating it on first sight.
+ * Returns NULL if the table is full or allocation failed. */
+static flow_t *flow_get(uint32_t addr, uint16_t port) {
+    for (int i = 0; i < nflows; i++) {
+        if (addr == flows[i]->addr && port == flows[i]->port) {
+            return flows[i];
+        }
+    }        
+
+    if (nflows == MAX_FLOWS) {
+        return NULL;
+    }    
+    
+    flow_t *f = calloc(1, sizeof(flow_t));
+    if (f == NULL) {
+        return NULL;
+    }
+
+    f->addr = addr;
+    f->port = port;
+    flows[nflows] = f;
+    nflows += 1;
+    return f;
 }
 
 int rx_run(const netval_cfg *cfg)
@@ -163,9 +207,8 @@ int rx_run(const netval_cfg *cfg)
     uint64_t ovs = 0;
     uint64_t malformed = 0;
     uint64_t checksum_mismatch = 0;
-    uint64_t received = 0;
-
-    uint32_t expected_next = 0;    
+    uint64_t flows_dropped = 0;
+   
     /*With MSG_TRUNC, recvfrom returns the datagram's real length rather than the 
     copied length, so n > sizeof buf is the truncation signal. */
     int rc = 0;
@@ -190,9 +233,13 @@ int rx_run(const netval_cfg *cfg)
         if (nready == 0) {
             goto done;
         }
-
+        
+        // drain loop
         for (;;) {
-            ssize_t n = recvfrom(sfd, buf, sizeof(buf), MSG_TRUNC, NULL, NULL);
+            struct sockaddr_in src;
+            socklen_t srclen = sizeof(src);
+
+            ssize_t n = recvfrom(sfd, buf, sizeof(buf), MSG_TRUNC, (struct sockaddr *)&src, &srclen);
 
             if (n == -1) {            
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -210,6 +257,7 @@ int rx_run(const netval_cfg *cfg)
                 rc = -1;
                 goto done;
             }
+
 
             if (n > (ssize_t)sizeof(buf)) {
                 log_warn("Oversized packet: %zd > %d", n, NETVAL_MAX_DGRAM);
@@ -236,22 +284,45 @@ int rx_run(const netval_cfg *cfg)
                 continue;
             }
 
-            if (expected_next != hdr.seq) {
-                log_warn("Expected seq:     %u      Actual seq:     %u", expected_next, hdr.seq);
+            flow_t *f = flow_get(src.sin_addr.s_addr, src.sin_port);
+            if (f == NULL) {
+                flows_dropped++;
+                continue;
             }
 
-            received++;
-            expected_next = hdr.seq + 1;
+            if (hdr.seq == f->expected_next) {
+                f->expected_next = hdr.seq + 1;
+
+            } else if (hdr.seq > f->expected_next) {
+                f->gaps++;
+                f->expected_next = hdr.seq + 1;
+
+            } else {
+                f->backward++;
+            }
+
+            f->received++;
         }
     }
+
+
     done:
     close(epfd);
     close(sfd);
 
-    /* Summary. The four classes are mutually exclusive — every datagram
+    /* Summary. The reject classes are mutually exclusive — every datagram
      * the kernel handed us is counted in exactly one, so they sum to
-     * "observed" rather than being tallied separately. */
-    uint64_t observed = received + ovs + malformed + checksum_mismatch;
+     * "observed" rather than being tallied separately. "valid" is now the
+     * sum of the per-flow tallies rather than its own counter, so a
+     * bookkeeping slip in the flow table shows up as an inconsistency
+     * instead of hiding. */
+    uint64_t valid = 0, gaps = 0, backward = 0;
+    for (int i = 0; i < nflows; i++) {
+        valid    += flows[i]->received;
+        gaps     += flows[i]->gaps;
+        backward += flows[i]->backward;
+    }
+    uint64_t observed = valid + ovs + malformed + checksum_mismatch + flows_dropped;
 
     log_info("---- rx summary ----");
     /* Three exits: stop flag set → SIGINT; clean rc without the flag →
@@ -259,12 +330,38 @@ int rx_run(const netval_cfg *cfg)
     log_info("stopped by         : %s",
              stop ? "SIGINT" : (rc == 0 ? "idle timeout" : "error"));
     log_info("datagrams observed : %" PRIu64, observed);
-    log_info("  valid            : %" PRIu64, received);
+    log_info("  valid            : %" PRIu64, valid);
     log_info("  oversized        : %" PRIu64, ovs);
     log_info("  malformed        : %" PRIu64, malformed);
     log_info("  checksum failed  : %" PRIu64, checksum_mismatch);
-    if (received > 0) {
-        log_info("highest seq + 1    : %" PRIu32, expected_next);
+    log_info("  untracked        : %" PRIu64 "  (table full / alloc failed)",
+             flows_dropped);
+
+    log_info("flows seen         : %d / %d", nflows, MAX_FLOWS);
+    for (int i = 0; i < nflows; i++) {
+        /* The one place the key gets byte-order converted: it is stored
+         * network-order because it is only ever compared, but humans read
+         * dotted-quad and decimal. */
+        char ip[INET_ADDRSTRLEN];
+        struct in_addr a = { .s_addr = flows[i]->addr };
+        if (inet_ntop(AF_INET, &a, ip, sizeof(ip)) == NULL)
+            snprintf(ip, sizeof(ip), "?");
+
+        log_info("  %s:%-5u  valid %" PRIu64 "  gaps %" PRIu64
+                 "  backward %" PRIu64 "  next %" PRIu32,
+                 ip, ntohs(flows[i]->port), flows[i]->received,
+                 flows[i]->gaps, flows[i]->backward,
+                 flows[i]->expected_next);
     }
+    if (gaps || backward)
+        log_info("totals             : gaps %" PRIu64 "  backward %" PRIu64
+                 "  (backward = duplicate OR late reorder — not separable"
+                 " without per-seq history)", gaps, backward);
+
+    /* Teardown LAST: the summary above reads these records. */
+    for (int i = 0; i < nflows; i++) {
+        free(flows[i]);
+    }
+
     return rc;
 }
