@@ -1,62 +1,70 @@
-/* rx.c — the receiver. M1 (blocking loop) done; now Phase A:
+/* rx.c — the receiver. M1 (blocking) and Phase A (epoll) done; Phase B:
  *
- * >>> YOURS TO IMPLEMENT: convert to a non-blocking epoll loop <<<
+ * >>> YOURS TO IMPLEMENT: a malloc'd per-flow table <<<
  *
- * Why (you have the evidence): the baseline strace shows one recvfrom
- * syscall per datagram, and under a 2000-packet unlimited-rate burst
- * the socket buffer overflowed — the kernel silently dropped most of
- * the flood before the app ever saw it. Readiness-based I/O is the
- * standard fix, and the same loop gives us --idle-timeout for free.
+ * Why (you watched this happen in GDB): a restarted tx produced
+ * "Expected seq: 50  Actual seq: 0" — the single global expected_next
+ * can't tell two flows apart, so N tx workers would look like a storm
+ * of fake loss/reorder. A flow = one sender socket = one (source ip,
+ * source port) pair; each gets its own seq tracking.
  *
- * The pieces, in order (existing socket/bind/sigaction stay as-is):
+ * The pieces:
  *
- * 1. Make the socket non-blocking, AFTER bind succeeds:
- *        int flags = fcntl(sfd, F_GETFL);          — read current flags
- *        fcntl(sfd, F_SETFL, flags | O_NONBLOCK);  — add, don't replace
- *    Both calls return -1 on error. OR-ing preserves whatever flags the
- *    fd already has — F_SETFL with a bare O_NONBLOCK would wipe them.
- *    From here recvfrom NEVER sleeps: if the queue is empty it returns
- *    -1 with errno EAGAIN (a.k.a. EWOULDBLOCK — same value on Linux,
- *    but portable code checks both: EAGAIN || EWOULDBLOCK).
+ * 1. Capture WHO sent each datagram — fill recvfrom's last two args:
+ *        struct sockaddr_in src;
+ *        socklen_t srclen = sizeof(src);           <- EVERY call
+ *        recvfrom(..., (struct sockaddr *)&src, &srclen);
+ *    srclen is value-result: the kernel overwrites it, so it MUST be
+ *    re-set before each call (declare both INSIDE the drain loop and
+ *    it's automatic). The classic bug is hoisting srclen out.
  *
- * 2. Create the epoll instance and register the socket:
- *        int epfd = epoll_create1(0);              — -1 on error
- *        struct epoll_event ev = {0};
- *        ev.events  = EPOLLIN;                     — "readable" interest
- *        ev.data.fd = sfd;                         — echoed back to you
- *        epoll_ctl(epfd, EPOLL_CTL_ADD, sfd, &ev); — -1 on error
- *    epfd is a real fd: it needs its own close(), on every exit path.
+ * 2. The flow entry — this is the "explicit memory management" piece:
+ *        typedef struct {
+ *            uint32_t addr;         src.sin_addr.s_addr, kept as-is
+ *            uint16_t port;         src.sin_port, kept as-is
+ *            uint32_t expected_next;
+ *            uint64_t received;     valid datagrams from this flow
+ *            uint64_t gaps;         forward jumps (suspected loss)
+ *            uint64_t backward;     seq < expected: dup OR reorder —
+ *                                   we can't tell which yet (M3 can);
+ *                                   count honestly under one name
+ *        } flow_t;
+ *    Keep addr/port in network order as opaque key bytes — they're
+ *    only compared, never done arithmetic on, so no ntohl needed.
  *
- * 3. The outer loop — wait for readiness:
- *        struct epoll_event events[8];
- *        int nready = epoll_wait(epfd, events, 8, timeout_ms);
- *    timeout_ms: -1 = block forever; otherwise cfg->idle_timeout_s
- *    converted to ms (cli.c caps it so the int can't overflow).
- *    Three outcomes:
- *        nready > 0  → events[0..nready) are ready fds; with one fd
- *                      registered, nready is always 1 here.
- *        nready == 0 → TIMEOUT: idle_timeout_s passed with no traffic.
- *                      This is the clean-stop path — break, summary.
- *        nready == -1→ EINTR: same drill as M1's recvfrom (check stop,
- *                      else re-wait). Anything else: real error.
+ * 3. The table: a fixed array of POINTERS, entries malloc'd on first
+ *    sight of a new key:
+ *        #define MAX_FLOWS 64
+ *        flow_t *flows[MAX_FLOWS];  int nflows = 0;
+ *    Lookup = linear scan matching (addr, port) — 64 entries, fine.
+ *    Miss → malloc(sizeof(flow_t)), CHECK FOR NULL (malloc returns
+ *    NULL on failure — unchecked NULL deref is the classic), zero or
+ *    fill every field (malloc memory is GARBAGE, not zeroed —
+ *    expected_next must start at 0 deliberately; calloc is the
+ *    alternative that zeroes), store the key, expected_next = 0.
+ *    Table full → count it in a global flows_dropped and skip seq
+ *    tracking for that datagram (still count it received) — honest
+ *    degradation, no crash.
  *
- * 4. The inner loop — DRAIN the socket:
- *    One readiness event does NOT mean one datagram; a burst may have
- *    queued dozens. Loop recvfrom (same MSG_TRUNC call, same classify/
- *    count path you already wrote — move it, don't rewrite it) until
- *    recvfrom returns -1 with EAGAIN/EWOULDBLOCK → queue empty, go
- *    back to epoll_wait. Skipping the drain is THE classic epoll bug:
- *    with level-triggered epoll it just costs syscalls, with
- *    edge-triggered it loses data — be ready to explain why.
+ * 4. Move the seq logic (lines ~231-236) onto the flow entry:
+ *    equal → in order; hdr.seq > expected → gaps++, WARN, resync;
+ *    hdr.seq < expected → backward++, WARN, do NOT resync (a stale
+ *    late packet shouldn't drag expected_next backwards).
+ *    Everything else (magic/len/checksum rejects) stays global —
+ *    those failures aren't attributable to a trusted flow identity.
  *
- * 5. Your decision, before you write it: EPOLLIN alone (level-
- *    triggered, the default) or EPOLLIN | EPOLLET (edge-triggered)?
- *    LT: epoll_wait keeps reporting the fd as long as data remains.
- *    ET: it reports only on the empty→non-empty transition.
- *    Decide, write one sentence saying why next to the epoll_ctl call,
- *    and be able to defend it for 60 seconds (it becomes a drill).
+ * 5. Teardown, at done: for each flow: free(flows[i]). Every malloc
+ *    has exactly one owner and one free site; ASan's leak check is
+ *    the gate. (Free-and-forget: NULLing slots after free is optional
+ *    here since the program exits — but say why if asked: dangling
+ *    PONTERS are only dangerous if used.)
  *
- * New headers: <sys/epoll.h>, <fcntl.h>.
+ * 6. Summary: per-flow lines + the existing global tallies. Print the
+ *    flow key with inet_ntop + ntohs — the ONE place byte order gets
+ *    converted (for display). Formatter is Claude's once your table
+ *    lands.
+ *
+ * New headers: <stdlib.h> (malloc/free), <arpa/inet.h> (inet_ntop).
  */
 #include <sys/socket.h>   /* socket, sendto            */
 #include <netinet/in.h>   /* sockaddr_in, htons        */

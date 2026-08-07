@@ -232,6 +232,19 @@ Nadav's-future-interview terms.
   idiom is the C answer to "no destructors"); (7) epoll cut wakeups,
   not syscalls-per-datagram — recvmmsg (M5) is the syscall-count
   story; keeping the claims separate is what makes both defensible.
+- **GDB walkthrough #1 (interview track A)** — done, on the live epoll
+  receiver: breakpoint in the loop, `print nready`/`events[0]`
+  (bitmask: 1 == EPOLLIN), hex-dumped a received datagram (`x/24xb`)
+  and verified magic + big-endian seq against wire.h by eye; word-view
+  (`x/1xw`) showed the same bytes swapped — little-endian display vs
+  wire order in one command; `bt` through glibc's epoll_wait frame;
+  caught the drain's EAGAIN endpoint (n=-1, errno=11) with a
+  conditional breakpoint after a line breakpoint on a bare `break;`
+  slid to an instruction the EAGAIN path bypasses. Bonus finds:
+  "No symbol in current context" = block scope, live; GDB's Ctrl-C
+  pauses the inferior without running its SIGINT handler; a restarted
+  tx looks like loss/reorder to the single global expected_next —
+  the per-flow motivation (Phase B), observed first-hand.
 
 ### Concepts covered so far (explained, pre-implementation)
 

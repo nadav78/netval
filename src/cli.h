@@ -19,6 +19,9 @@ typedef struct {
     uint16_t    payload_len;              /* tx: payload bytes per packet */
     uint32_t    idle_timeout_s;           /* rx: stop after N idle seconds,
                                              0 = wait forever (Ctrl-C only) */
+    uint32_t    threads;                  /* tx: worker count; each worker is
+                                             an independent flow (own socket,
+                                             own seq space starting at 0) */
 } netval_cfg;
 
 /* Parse argv into *cfg (defaults applied first). Returns 0 on success,

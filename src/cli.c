@@ -21,6 +21,7 @@ static void usage(const char *prog)
         "  -l, --payload BYTES  tx: payload size per packet, max %d [32]\n"
         "  -t, --idle-timeout S rx: stop after S seconds with no packets,\n"
         "                       0 = wait forever                    [0]\n"
+        "  -T, --threads N      tx: worker threads, one flow each   [1]\n"
         "  -h, --help           show this help\n",
         prog, NETVAL_MAX_PAYLOAD);
 }
@@ -48,6 +49,7 @@ int cli_parse(int argc, char **argv, netval_cfg *cfg)
         { "rate",    required_argument, NULL, 'r' },
         { "payload",      required_argument, NULL, 'l' },
         { "idle-timeout", required_argument, NULL, 't' },
+        { "threads",      required_argument, NULL, 'T' },
         { "help",         no_argument,       NULL, 'h' },
         { 0, 0, 0, 0 },
     };
@@ -60,12 +62,13 @@ int cli_parse(int argc, char **argv, netval_cfg *cfg)
     cfg->rate_pps = 0;
     cfg->payload_len = 32;
     cfg->idle_timeout_s = 0;
+    cfg->threads = 1;
 
     int have_mode = 0;
     int opt;
     unsigned long v;
 
-    while ((opt = getopt_long(argc, argv, "m:d:p:c:r:l:t:h", longopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "m:d:p:c:r:l:t:T:h", longopts, NULL)) != -1) {
         switch (opt) {
         case 'm':
             if (strcmp(optarg, "tx") == 0) {
@@ -122,6 +125,13 @@ int cli_parse(int argc, char **argv, netval_cfg *cfg)
                 return -1;
             }
             cfg->idle_timeout_s = (uint32_t)v;
+            break;
+        case 'T':
+            if (parse_ulong(optarg, 64, &v) != 0 || v == 0) {
+                fprintf(stderr, "error: --threads must be 1-64\n");
+                return -1;
+            }
+            cfg->threads = (uint32_t)v;
             break;
         case 'h':
             usage(argv[0]);

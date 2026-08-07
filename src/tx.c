@@ -1,43 +1,70 @@
-/* tx.c — the sender.
+/* tx.c — the sender. M1 (single-threaded) done; now Phase B:
  *
- * >>> YOURS TO IMPLEMENT <<<
+ * >>> YOURS TO IMPLEMENT: --threads N worker senders <<<
  *
- * Blocking UDP send loop. The system calls you need, in order:
+ * Model: one worker = one FLOW = one socket = one seq space from 0 =
+ * one stats struct. Workers share nothing they write. (The rejected
+ * alternative — splitting one global seq range across workers — would
+ * make normal thread interleaving look like loss/reorder to rx.)
  *
- * 1. socket(AF_INET, SOCK_DGRAM, 0)
- *      Creates a UDP socket. AF_INET = IPv4, SOCK_DGRAM = UDP
- *      (datagrams). Returns a file descriptor (small int) or -1; on
- *      any syscall failure, log strerror(errno) and bail out.
+ * The pieces:
  *
- * 2. Build the destination address — a struct sockaddr_in:
- *        .sin_family = AF_INET
- *        .sin_port   = htons(cfg->port)        <- 16-bit, network order!
- *        .sin_addr   = via inet_pton(AF_INET, cfg->dest_ip, &addr.sin_addr)
- *      inet_pton converts "127.0.0.1" text to the binary address;
- *      returns 1 on success (0 = malformed address — check it).
+ * 1. A per-worker args/results struct (workers can't take parameters
+ *    any other way — pthread start routines get ONE void*):
+ *        typedef struct {
+ *            const netval_cfg   *cfg;    read-only, shared
+ *            struct sockaddr_in  dest;   or a shared const pointer
+ *            int                 id;     0..N-1, for logs
+ *            uint64_t            sent;   result: filled by the worker
+ *            int                 rc;     result: 0 / -1
+ *        } tx_worker;
+ *    One array of these in tx_run, one element per worker — the
+ *    element is OWNED by its worker until join.
  *
- * 3. The loop, for seq = 0 .. cfg->count-1:
- *      a. Fill a netval_hdr: magic, seq, ts_ns from
- *         clock_gettime(CLOCK_REALTIME) (ts.tv_sec * 1000000000ull +
- *         ts.tv_nsec), payload_len = cfg->payload_len.
- *      b. Fill the payload with a deterministic pattern the receiver
- *         can re-derive, e.g. payload[i] = (uint8_t)(seq + i).
- *      c. checksum = wire_checksum(payload, payload_len); then
- *         wire_hdr_pack into buf, memcpy payload after the header.
- *      d. sendto(fd, buf, NETVAL_HDR_SIZE + payload_len, 0,
- *                (struct sockaddr *)&dest, sizeof(dest))
- *         One datagram per call. Check for -1.
- *      e. Rate limiting: if cfg->rate_pps > 0, sleep between sends —
- *         nanosleep() with interval 1e9 / rate_pps nanoseconds is fine
- *         for Milestone 1.
+ * 2. The worker function:
+ *        static void *worker(void *arg)
+ *    First line: cast arg back — tx_worker *w = arg;
+ *    Body = your existing M1 send loop, MOVED here (socket, send
+ *    loop, rate pacing, close). Each worker creates ITS OWN socket —
+ *    the OS gives each a distinct source port, which is what makes it
+ *    a distinct flow at rx. Results go in w->sent / w->rc; return
+ *    NULL (or return w — unused either way).
+ *    NOTE inside the loop: errors set w->rc and break — never exit()
+ *    (D6: it would kill all workers mid-send) and never return -1
+ *    (that's a void* — returning an int through it is a bug).
  *
- * 4. close(fd), log a summary ("sent N packets"), return 0.
+ * 3. tx_run becomes spawn + join:
+ *        pthread_t tids[cfg->threads];
+ *        for i: fill workers[i]; pthread_create(&tids[i], NULL,
+ *                                               worker, &workers[i]);
+ *        for i: pthread_join(tids[i], NULL);
+ *    pthread_create/join return 0 or an ERROR NUMBER directly (they
+ *    do NOT set errno — use strerror(ret), a classic trap).
+ *    Join in order 0..N-1 — join order doesn't matter, you need ALL.
+ *    After the joins: aggregate workers[].sent / .rc for the summary
+ *    and the return code. N=1 goes through the same path — no
+ *    special case.
  *
- * A single stack buffer uint8_t buf[NETVAL_MAX_DGRAM] is enough — no
- * malloc needed here.
+ * 4. Early stop (Ctrl-C) — one shared flag, done RIGHT this time:
+ *        #include <stdatomic.h>
+ *        static atomic_bool stop;              file scope
+ *        handler: atomic_store(&stop, true);   still the only line
+ *        worker loop condition: && !atomic_load(&stop)
+ *    Why not volatile sig_atomic_t like rx? That type is guaranteed
+ *    only against SIGNALS (same-thread interruption). For visibility
+ *    ACROSS THREADS C11 requires an atomic; a lock-free atomic_bool
+ *    is safe for both the handler write and cross-thread reads —
+ *    one flag covering both hazards. (Install SIGINT via sigaction,
+ *    same as rx. TSan will validate this choice under load.)
  *
- * Headers you'll need: <sys/socket.h>, <netinet/in.h>, <arpa/inet.h>,
- * <unistd.h>, <string.h>, <errno.h>, <time.h>.
+ * Ownership table (write it in PROGRESS.md when done):
+ *    cfg, dest      shared, READ-ONLY after spawn — safe, say why
+ *    workers[i]     worker i writes, main reads AFTER join — the
+ *                   join IS the synchronization point
+ *    stop           handler writes, workers read — atomic
+ *
+ * New headers: <pthread.h>, <stdatomic.h>, <signal.h>.
+ * Link: -lpthread (Makefile already does).
  */
 #include <sys/socket.h>   /* socket, sendto            */
 #include <netinet/in.h>   /* sockaddr_in, htons        */
