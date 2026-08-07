@@ -39,7 +39,7 @@ counts toward them.
 | Phase | Scope | Backs | Status |
 |-------|-------|-------|--------|
 | A | epoll receiver: `O_NONBLOCK`, drain-until-`EAGAIN`, `--idle-timeout`, LT/ET decision, strace evidence | epoll bullet | ✅ Done |
-| B | tx `--threads N` workers; rx malloc'd per-flow table (src ip:port), dup/backward-seq counter, TSan-clean | pthreads + memory-mgmt bullets | ⬜ |
+| B | tx `--threads N` workers; rx malloc'd per-flow table (src ip:port), dup/backward-seq counter, TSan-clean | pthreads + memory-mgmt bullets | 🔨 tx half ✅; rx table next |
 | C | netem (probe; proxy fallback) fault injection; GDB-first debugging stories; disassembly walkthroughs | fault-injection + GDB bullet | ⬜ |
 
 Each phase ends with a GDB walkthrough of the new code (structured,
@@ -245,6 +245,30 @@ Nadav's-future-interview terms.
   pauses the inferior without running its SIGINT handler; a restarted
   tx looks like loss/reorder to the single global expected_next —
   the per-flow motivation (Phase B), observed first-hand.
+- **tx `--threads N` workers (interview track B, tx half)** — done:
+  per-worker tx_worker struct (args in / results out through the one
+  void* a pthread start routine gets), spawn+join in tx_run, one
+  socket/flow/seq-space per worker, atomic_bool stop. Verified: 4×100k
+  Ctrl-C mid-flight → 2234/2234/2234/2235 partial counts, clean
+  summary, exit 0; 4×500 against rx = the fake-loss WARN storm (one
+  global expected_next sees 4 interleaved flows as ~75% loss) — the
+  per-flow table's before-picture. Learned: (1) struct assignment
+  COPIES — `tx_worker w = workers[i]` initializes a throwaway copy;
+  arrays decay, structs copy, same `=`; (2) fill the element, THEN
+  spawn — after pthread_create returns the worker may already be
+  reading it; (3) pthread_* return error numbers directly:
+  strerror(ret), never errno; (4) join everything you spawned before
+  returning — an early return pops the stack frame every worker's arg
+  pointer targets (join bound = nspawned, worker failure deferred to
+  rc, never short-circuits); (5) volatile sig_atomic_t guards
+  same-thread signal interruption only; cross-THREAD visibility needs
+  C11 atomics — lock-free atomic_bool is async-signal-safe too, one
+  flag covering both hazards; (6) a process-directed signal is
+  delivered to exactly ONE thread (here: main, in pthread_join) — the
+  workers never saw EINTR and learned of the stop purely through the
+  flag, which is why handler-sets-flag scales to threads; (7) uniform
+  partial counts (±1) across workers = the atomic's visibility
+  working, observable in the logs.
 
 ### Concepts covered so far (explained, pre-implementation)
 
@@ -440,7 +464,7 @@ progress line) — and the synchronization rules written down as a
 | `docs/sequence-accounting.md` spec               | 📋    | ⬜ |
 | `src/account.{h,c}` classifier                   | 🧑    | ⬜ |
 | Per-flow table in rx                              | 🧑    | ⬜ |
-| tx `--threads N` workers (sockets, lifecycle, stop, errors) | 🧑 | ⬜ |
+| tx `--threads N` workers (sockets, lifecycle, stop, errors) | 🧑 | ✅ Done (interview track B) |
 | Per-worker rate limiting                          | 🧑    | ⬜ |
 | Deterministic account-module test harness         | 🤖    | ⬜ |
 | Stress/interleave test scripts                    | 🤖    | ⬜ |
